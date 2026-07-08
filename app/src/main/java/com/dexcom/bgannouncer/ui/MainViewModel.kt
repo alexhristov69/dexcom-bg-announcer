@@ -2,8 +2,13 @@ package com.dexcom.bgannouncer.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.dexcom.bgannouncer.bluetooth.LastBluetoothArtFlash
+import com.dexcom.bgannouncer.bluetooth.LastBluetoothArtStore
 import com.dexcom.bgannouncer.data.AppSettings
+import com.dexcom.bgannouncer.data.ConnectionDiagnostics
+import com.dexcom.bgannouncer.data.ConnectionDiagnosticsRepository
 import com.dexcom.bgannouncer.data.DexcomCredentials
+import com.dexcom.bgannouncer.data.RuntimeStatus
 import com.dexcom.bgannouncer.data.SettingsRepository
 import com.dexcom.bgannouncer.dexcom.DexcomRegion
 import com.dexcom.bgannouncer.dexcom.DexcomShareClient
@@ -38,6 +43,8 @@ data class MainUiState(
     val lastReadingValue: Int? = null,
     val lastReadingTrend: String? = null,
     val lastPollTime: Long? = null,
+    val nextPollCountdownSeconds: Int? = null,
+    val isPolling: Boolean = false,
     val lastAdHocTestTime: Long? = null,
     val lastAdHocTestResult: String? = null,
     val lastError: String? = null,
@@ -47,6 +54,8 @@ data class MainUiState(
     val adHocTestStep: AdHocTestStep = AdHocTestStep.IDLE,
     val adHocTestMessage: String? = null,
     val adHocCooldownSeconds: Int = 0,
+    val connectionDiagnostics: ConnectionDiagnostics = ConnectionDiagnosticsRepository.emptySnapshot(),
+    val lastBluetoothArtFlash: LastBluetoothArtFlash? = null,
 ) {
     val isConfigured: Boolean = username.isNotBlank() && password.isNotBlank()
     val adHocTestRunning: Boolean = adHocTestStep == AdHocTestStep.FETCHING ||
@@ -61,11 +70,12 @@ class MainViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val dexcomShareClient: DexcomShareClient,
     private val glucoseTestRunner: GlucoseTestRunner,
+    private val lastBluetoothArtStore: LastBluetoothArtStore,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
-    private var cooldownJob: Job? = null
+    private var statusTickerJob: Job? = null
 
     init {
         refreshFromRepository()
@@ -81,11 +91,16 @@ class MainViewModel @Inject constructor(
                 }
                 if (testState.step == AdHocTestStep.DONE || testState.step == AdHocTestStep.ERROR) {
                     refreshFromRepository()
-                    startCooldownTicker()
+                    startStatusTicker()
                 }
             }
         }
-        startCooldownTicker()
+        startStatusTicker()
+        viewModelScope.launch {
+            lastBluetoothArtStore.lastFlash.collect { flash ->
+                _uiState.update { it.copy(lastBluetoothArtFlash = flash) }
+            }
+        }
     }
 
     fun onUsernameChanged(value: String) = _uiState.update { it.copy(username = value) }
@@ -120,8 +135,16 @@ class MainViewModel @Inject constructor(
                     isBusy = false,
                     statusMessage = result.fold({ "Connection successful" }, { null }),
                     errorMessage = result.fold({ null }, { error -> error.message }),
+                    connectionDiagnostics = dexcomShareClient.getDiagnostics(),
                 )
             }
+        }
+    }
+
+    fun clearConnectionDiagnostics() {
+        dexcomShareClient.clearDiagnostics()
+        _uiState.update {
+            it.copy(connectionDiagnostics = ConnectionDiagnosticsRepository.emptySnapshot())
         }
     }
 
@@ -135,6 +158,7 @@ class MainViewModel @Inject constructor(
                     isBusy = false,
                     statusMessage = result.getOrNull(),
                     errorMessage = result.exceptionOrNull()?.message,
+                    connectionDiagnostics = dexcomShareClient.getDiagnostics(),
                 )
             }
             glucoseTestRunner.resetIdle()
@@ -150,13 +174,17 @@ class MainViewModel @Inject constructor(
         } else {
             CgmMonitorForegroundService.stop(context)
         }
-        refreshFromRepository()
+        refreshStatus()
         _uiState.update {
             it.copy(
                 monitoringEnabled = nextEnabled,
                 statusMessage = if (nextEnabled) "Monitoring started" else "Monitoring stopped",
             )
         }
+    }
+
+    fun refreshStatus() {
+        refreshFromRepository()
     }
 
     private fun refreshFromRepository() {
@@ -178,9 +206,12 @@ class MainViewModel @Inject constructor(
                 lastReadingValue = status.lastReadingValue,
                 lastReadingTrend = status.lastReadingTrend,
                 lastPollTime = status.lastPollTime,
+                isPolling = status.isPolling,
+                nextPollCountdownSeconds = computeNextPollCountdown(status),
                 lastAdHocTestTime = status.lastAdHocTestTime,
                 lastAdHocTestResult = status.lastAdHocTestResult,
                 lastError = status.lastError,
+                connectionDiagnostics = dexcomShareClient.getDiagnostics(),
             )
         }
     }
@@ -195,15 +226,41 @@ class MainViewModel @Inject constructor(
         )
     }
 
-    private fun startCooldownTicker() {
-        cooldownJob?.cancel()
-        cooldownJob = viewModelScope.launch {
+    private fun startStatusTicker() {
+        statusTickerJob?.cancel()
+        statusTickerJob = viewModelScope.launch {
             while (isActive) {
-                val remaining = glucoseTestRunner.cooldownRemainingSeconds()
-                _uiState.update { it.copy(adHocCooldownSeconds = remaining) }
+                val status = settingsRepository.getRuntimeStatus()
+                _uiState.update {
+                    it.copy(
+                        adHocCooldownSeconds = glucoseTestRunner.cooldownRemainingSeconds(),
+                        serviceRunning = status.serviceRunning,
+                        lastReadingValue = status.lastReadingValue,
+                        lastReadingTrend = status.lastReadingTrend,
+                        lastPollTime = status.lastPollTime,
+                        isPolling = status.isPolling,
+                        lastAdHocTestTime = status.lastAdHocTestTime,
+                        lastAdHocTestResult = status.lastAdHocTestResult,
+                        lastError = status.lastError,
+                        nextPollCountdownSeconds = computeNextPollCountdown(status),
+                        connectionDiagnostics = if (status.serviceRunning) {
+                            dexcomShareClient.getDiagnostics()
+                        } else {
+                            it.connectionDiagnostics
+                        },
+                    )
+                }
                 delay(1_000)
             }
         }
+    }
+
+    private fun computeNextPollCountdown(status: RuntimeStatus): Int? {
+        if (!status.serviceRunning) return null
+        if (status.isPolling) return 0
+        val nextPollTime = status.nextPollTime ?: return null
+        val remainingMs = nextPollTime - System.currentTimeMillis()
+        return (remainingMs / 1_000L).toInt().coerceAtLeast(0)
     }
 
     private fun MainUiState.toAppSettings(monitoringEnabled: Boolean): AppSettings {

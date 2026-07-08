@@ -1,7 +1,6 @@
 package com.dexcom.bgannouncer.di
 
 import com.dexcom.bgannouncer.dexcom.DexcomClientProvider
-import com.dexcom.bgannouncer.dexcom.DexcomShareClient
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -23,14 +22,5 @@ object AppModule {
     @Singleton
     fun provideJson(provider: DexcomClientProvider): Json {
         return provider.createJson()
-    }
-
-    @Provides
-    @Singleton
-    fun provideDexcomShareClient(
-        okHttpClient: OkHttpClient,
-        json: Json,
-    ): DexcomShareClient {
-        return DexcomShareClient(okHttpClient, json)
     }
 }

@@ -25,6 +25,23 @@ enum class GlucoseTrend(val code: Int, val label: String, val spokenPhrase: Stri
         fun fromCode(code: Int): GlucoseTrend {
             return entries.firstOrNull { it.code == code } ?: NONE
         }
+
+        fun fromName(name: String): GlucoseTrend {
+            val normalized = name.trim().lowercase().replace("_", "").replace(" ", "")
+            return when (normalized) {
+                "none" -> NONE
+                "doubleup" -> DOUBLE_UP
+                "singleup" -> SINGLE_UP
+                "fortyfiveup" -> FORTY_FIVE_UP
+                "flat" -> FLAT
+                "fortyfivedown" -> FORTY_FIVE_DOWN
+                "singledown" -> SINGLE_DOWN
+                "doubledown" -> DOUBLE_DOWN
+                "notcomputable" -> NOT_COMPUTABLE
+                "rateoutofrange" -> RATE_OUT_OF_RANGE
+                else -> entries.firstOrNull { it.name.replace("_", "").lowercase() == normalized } ?: NONE
+            }
+        }
     }
 }
 

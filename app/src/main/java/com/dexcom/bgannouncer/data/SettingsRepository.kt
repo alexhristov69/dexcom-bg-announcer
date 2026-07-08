@@ -34,6 +34,8 @@ data class RuntimeStatus(
     val lastReadingTrend: String? = null,
     val lastReadingTime: Long? = null,
     val lastPollTime: Long? = null,
+    val nextPollTime: Long? = null,
+    val isPolling: Boolean = false,
     val lastAdHocTestTime: Long? = null,
     val lastAdHocTestResult: String? = null,
     val lastError: String? = null,
@@ -113,6 +115,8 @@ class SettingsRepository @Inject constructor(
             lastReadingTrend = prefs.getString(KEY_LAST_READING_TREND, null),
             lastReadingTime = prefs.getLong(KEY_LAST_READING_TIME, 0L).takeIf { it > 0L },
             lastPollTime = prefs.getLong(KEY_LAST_POLL_TIME, 0L).takeIf { it > 0L },
+            nextPollTime = prefs.getLong(KEY_NEXT_POLL_TIME, 0L).takeIf { it > 0L },
+            isPolling = prefs.getBoolean(KEY_IS_POLLING, false),
             lastAdHocTestTime = prefs.getLong(KEY_LAST_ADHOC_TIME, 0L).takeIf { it > 0L },
             lastAdHocTestResult = prefs.getString(KEY_LAST_ADHOC_RESULT, null),
             lastError = prefs.getString(KEY_LAST_ERROR, null),
@@ -146,6 +150,12 @@ class SettingsRepository @Inject constructor(
                 } else {
                     remove(KEY_LAST_POLL_TIME)
                 }
+                if (next.nextPollTime != null) {
+                    putLong(KEY_NEXT_POLL_TIME, next.nextPollTime)
+                } else {
+                    remove(KEY_NEXT_POLL_TIME)
+                }
+                putBoolean(KEY_IS_POLLING, next.isPolling)
                 if (next.lastAdHocTestTime != null) {
                     putLong(KEY_LAST_ADHOC_TIME, next.lastAdHocTestTime)
                 } else {
@@ -189,6 +199,8 @@ class SettingsRepository @Inject constructor(
         private const val KEY_LAST_READING_TREND = "last_reading_trend"
         private const val KEY_LAST_READING_TIME = "last_reading_time"
         private const val KEY_LAST_POLL_TIME = "last_poll_time"
+        private const val KEY_NEXT_POLL_TIME = "next_poll_time"
+        private const val KEY_IS_POLLING = "is_polling"
         private const val KEY_LAST_ADHOC_TIME = "last_adhoc_time"
         private const val KEY_LAST_ADHOC_RESULT = "last_adhoc_result"
         private const val KEY_LAST_ERROR = "last_error"

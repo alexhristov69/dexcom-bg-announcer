@@ -18,6 +18,7 @@ class BluetoothArtFlashController @Inject constructor(
     @ApplicationContext private val context: Context,
     private val sessionHolder: GlucoseMediaSessionHolder,
     private val activeMediaSessionRegistry: ActiveMediaSessionRegistry,
+    private val lastBluetoothArtStore: LastBluetoothArtStore,
 ) {
     suspend fun flashArt(
         reading: GlucoseReading,
@@ -56,6 +57,7 @@ class BluetoothArtFlashController @Inject constructor(
         session.isActive = true
         session.setMetadata(metadata)
         session.setPlaybackState(playbackState)
+        lastBluetoothArtStore.recordFlash(reading, artBitmap)
 
         delay(durationSeconds * 1000L)
 
@@ -69,12 +71,14 @@ class BluetoothArtFlashController @Inject constructor(
         return true
     }
 
-    @Suppress("MissingPermission")
     private fun isBluetoothAudioConnected(): Boolean {
+        if (!BluetoothPermissionHelper.hasConnectPermission(context)) return false
         val adapter = BluetoothAdapter.getDefaultAdapter() ?: return false
         if (!adapter.isEnabled) return false
-        return adapter.getProfileConnectionState(BluetoothProfile.A2DP) ==
+        @Suppress("MissingPermission")
+        val connected = adapter.getProfileConnectionState(BluetoothProfile.A2DP) ==
             BluetoothProfile.STATE_CONNECTED
+        return connected
     }
 }
 

@@ -1,5 +1,6 @@
 package com.dexcom.bgannouncer.dexcom
 
+import com.dexcom.bgannouncer.data.ConnectionDiagnosticsRepository
 import com.dexcom.bgannouncer.data.DexcomCredentials
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
@@ -24,6 +25,7 @@ class DexcomShareClientTest {
         client = DexcomShareClient(
             okHttpClient = OkHttpClient(),
             json = Json { ignoreUnknownKeys = true },
+            diagnosticsRepository = ConnectionDiagnosticsRepository(),
             baseUrlProvider = object : DexcomBaseUrlProvider() {
                 override fun baseUrl(region: DexcomRegion): String = baseUrl
             },
@@ -37,7 +39,6 @@ class DexcomShareClientTest {
 
     @Test
     fun fetchLatestReading_parsesDexcomShareResponse() {
-        server.enqueue(MockResponse().setBody("\"account-id-123\""))
         server.enqueue(MockResponse().setBody("\"session-id-456\""))
         server.enqueue(
             MockResponse().setBody(
@@ -70,9 +71,52 @@ class DexcomShareClientTest {
     }
 
     @Test
+    fun fetchLatestReading_parsesStringTrendAndDateFormat() {
+        server.enqueue(MockResponse().setBody("\"session-id-456\""))
+        server.enqueue(
+            MockResponse().setBody(
+                """
+                [
+                  {
+                    "WT": "Date(1783532461869)",
+                    "ST": "Date(1783532461869)",
+                    "DT": "Date(1783532461869-0700)",
+                    "Value": 137,
+                    "Trend": "Flat"
+                  }
+                ]
+                """.trimIndent(),
+            ),
+        )
+
+        val result = runBlocking {
+            client.fetchLatestReading(
+                DexcomCredentials(
+                    username = "user@example.com",
+                    password = "secret",
+                    region = DexcomRegion.US,
+                ),
+            )
+        }
+
+        assertTrue(result.isSuccess)
+        val reading = result.getOrThrow()
+        assertEquals(137, reading.valueMgDl)
+        assertEquals(GlucoseTrend.FLAT, reading.trend)
+        assertEquals(1783532461869L, reading.timestamp.toEpochMilli())
+    }
+
+    @Test
     fun glucoseTrend_mapsKnownCodes() {
         assertEquals(GlucoseTrend.DOUBLE_UP, GlucoseTrend.fromCode(1))
         assertEquals(GlucoseTrend.FLAT, GlucoseTrend.fromCode(4))
         assertEquals(GlucoseTrend.NONE, GlucoseTrend.fromCode(99))
+    }
+
+    @Test
+    fun glucoseTrend_mapsKnownNames() {
+        assertEquals(GlucoseTrend.FLAT, GlucoseTrend.fromName("Flat"))
+        assertEquals(GlucoseTrend.DOUBLE_UP, GlucoseTrend.fromName("DoubleUp"))
+        assertEquals(GlucoseTrend.SINGLE_DOWN, GlucoseTrend.fromName("SingleDown"))
     }
 }

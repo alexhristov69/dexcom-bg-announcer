@@ -6,6 +6,9 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -27,15 +31,28 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.dexcom.bgannouncer.bluetooth.BluetoothPermissionHelper
 import com.dexcom.bgannouncer.dexcom.DexcomRegion
 import com.dexcom.bgannouncer.test.AdHocTestStep
 import java.time.Instant
@@ -46,9 +63,36 @@ import java.time.format.DateTimeFormatter
 fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    var passwordVisible by remember { mutableStateOf(false) }
+    var bluetoothConnectGranted by remember {
+        mutableStateOf(BluetoothPermissionHelper.hasConnectPermission(context))
+    }
+    var pendingBluetoothArtEnable by remember { mutableStateOf(false) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { }
+    val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        bluetoothConnectGranted = granted
+        if (granted && pendingBluetoothArtEnable) {
+            pendingBluetoothArtEnable = false
+            viewModel.onBluetoothArtEnabledChanged(true)
+        } else {
+            pendingBluetoothArtEnable = false
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshStatus()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Column(
         modifier = Modifier
@@ -65,6 +109,11 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
         )
 
         StatusCard(uiState)
+        LastBluetoothArtCard(uiState)
+        ConnectionDiagnosticsCard(
+            uiState = uiState,
+            onClear = viewModel::clearConnectionDiagnostics,
+        )
 
         Button(
             onClick = { viewModel.runAdHocTest() },
@@ -93,6 +142,9 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
             value = uiState.username,
             onValueChange = viewModel::onUsernameChanged,
             label = { Text("Dexcom Share username") },
+            supportingText = {
+                Text("Email, phone (+1…), or account UUID from uam1.dexcom.com")
+            },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
@@ -102,7 +154,16 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
             label = { Text("Dexcom Share password") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
+            visualTransformation = if (passwordVisible) {
+                VisualTransformation.None
+            } else {
+                PasswordVisualTransformation()
+            },
+            trailingIcon = {
+                TextButton(onClick = { passwordVisible = !passwordVisible }) {
+                    Text(if (passwordVisible) "Hide" else "Show")
+                }
+            },
         )
 
         RegionSelector(
@@ -149,7 +210,22 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
             ToggleRow("Include trend in speech", uiState.ttsIncludeTrend, viewModel::onTtsIncludeTrendChanged)
         }
 
-        ToggleRow("Flash Bluetooth cover art", uiState.bluetoothArtEnabled, viewModel::onBluetoothArtEnabledChanged)
+        ToggleRow(
+            label = "Flash Bluetooth cover art",
+            checked = uiState.bluetoothArtEnabled,
+            onCheckedChange = { enabled ->
+                if (!enabled) {
+                    viewModel.onBluetoothArtEnabledChanged(false)
+                    return@ToggleRow
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !bluetoothConnectGranted) {
+                    pendingBluetoothArtEnable = true
+                    bluetoothPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                } else {
+                    viewModel.onBluetoothArtEnabledChanged(true)
+                }
+            },
+        )
         if (uiState.bluetoothArtEnabled) {
             Text("Flash duration: ${uiState.bluetoothFlashDurationSeconds} seconds")
             Slider(
@@ -163,6 +239,23 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
         HorizontalDivider()
 
         Text("Permissions", style = MaterialTheme.typography.titleMedium)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            OutlinedButton(
+                onClick = {
+                    bluetoothPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                },
+                enabled = !bluetoothConnectGranted,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    if (bluetoothConnectGranted) {
+                        "Bluetooth permission granted"
+                    } else {
+                        "Grant Bluetooth permission (required for cover art)"
+                    },
+                )
+            }
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             OutlinedButton(
                 onClick = { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
@@ -198,11 +291,15 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
             Text(if (uiState.monitoringEnabled) "Stop Monitoring" else "Start Monitoring")
         }
 
-        uiState.statusMessage?.let { message ->
-            Text(message, color = MaterialTheme.colorScheme.primary)
-        }
-        uiState.errorMessage?.let { message ->
-            Text(message, color = MaterialTheme.colorScheme.error)
+        SelectionContainer {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                uiState.statusMessage?.let { message ->
+                    Text(message, color = MaterialTheme.colorScheme.primary)
+                }
+                uiState.errorMessage?.let { message ->
+                    Text(message, color = MaterialTheme.colorScheme.error)
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -212,20 +309,114 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
 @Composable
 private fun StatusCard(uiState: MainUiState) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Status", style = MaterialTheme.typography.titleMedium)
-            Text("Service: ${if (uiState.serviceRunning) "running" else "stopped"}")
-            Text(
-                "Last reading: ${
-                    uiState.lastReadingValue?.let { "$it mg/dL ${uiState.lastReadingTrend.orEmpty()}" } ?: "—"
-                }",
-            )
-            Text("Last poll: ${formatTime(uiState.lastPollTime)}")
-            Text("Last ad-hoc test: ${formatTime(uiState.lastAdHocTestTime)}")
-            uiState.lastAdHocTestResult?.let { Text("Ad-hoc result: $it") }
-            uiState.lastError?.let { Text("Last error: $it", color = MaterialTheme.colorScheme.error) }
-            if (uiState.adHocTestStep != AdHocTestStep.IDLE && uiState.adHocTestStep != AdHocTestStep.DONE) {
-                Text("Test step: ${uiState.adHocTestMessage ?: uiState.adHocTestStep.name}")
+        SelectionContainer {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Status", style = MaterialTheme.typography.titleMedium)
+                Text("Service: ${if (uiState.serviceRunning) "running" else "stopped"}")
+                Text(
+                    "Last reading: ${
+                        uiState.lastReadingValue?.let { "$it mg/dL ${uiState.lastReadingTrend.orEmpty()}" } ?: "—"
+                    }",
+                )
+                Text("Last poll: ${formatTime(uiState.lastPollTime)}")
+                Text(formatNextPollCountdown(uiState))
+                Text("Last ad-hoc test: ${formatTime(uiState.lastAdHocTestTime)}")
+                uiState.lastAdHocTestResult?.let { Text("Ad-hoc result: $it") }
+                uiState.lastError?.let { Text("Last error: $it", color = MaterialTheme.colorScheme.error) }
+                if (uiState.adHocTestStep != AdHocTestStep.IDLE && uiState.adHocTestStep != AdHocTestStep.DONE) {
+                    Text("Test step: ${uiState.adHocTestMessage ?: uiState.adHocTestStep.name}")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LastBluetoothArtCard(uiState: MainUiState) {
+    var expanded by remember { mutableStateOf(false) }
+    val lastFlash = uiState.lastBluetoothArtFlash
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded },
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Last Bluetooth art flash", style = MaterialTheme.typography.titleMedium)
+                Text(if (expanded) "▾" else "▸")
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (lastFlash == null) {
+                        Text(
+                            "No Bluetooth cover art has been sent yet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Text(
+                            "${lastFlash.valueMgDl} mg/dL ${lastFlash.trendLabel} · ${formatTime(lastFlash.flashedAtEpochMs)}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Image(
+                            bitmap = lastFlash.bitmap.asImageBitmap(),
+                            contentDescription = "Last Bluetooth cover art: ${lastFlash.valueMgDl} mg/dL",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(240.dp),
+                            contentScale = ContentScale.Fit,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionDiagnosticsCard(
+    uiState: MainUiState,
+    onClear: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val diagnosticsText = uiState.connectionDiagnostics.toDisplayText()
+    val hasDiagnostics = uiState.connectionDiagnostics.exchanges.isNotEmpty()
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { expanded = !expanded },
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Connection diagnostics", style = MaterialTheme.typography.titleMedium)
+                    Text(if (expanded) "▾" else "▸")
+                }
+                if (hasDiagnostics) {
+                    TextButton(onClick = onClear) {
+                        Text("Clear")
+                    }
+                }
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                SelectionContainer {
+                    Text(
+                        text = diagnosticsText,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    )
+                }
             }
         }
     }
@@ -265,6 +456,31 @@ private fun ToggleRow(label: String, checked: Boolean, onCheckedChange: (Boolean
 private fun formatTime(epochMs: Long?): String {
     if (epochMs == null) return "—"
     return TIME_FORMATTER.format(Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()))
+}
+
+private fun formatNextPollCountdown(uiState: MainUiState): String {
+    if (!uiState.monitoringEnabled || !uiState.serviceRunning) {
+        return "Next poll: —"
+    }
+    if (uiState.isPolling) {
+        return "Next poll: polling Dexcom now…"
+    }
+    val countdown = uiState.nextPollCountdownSeconds
+    return when (countdown) {
+        null -> "Next poll: starting…"
+        0 -> "Next poll: due now"
+        else -> "Next poll in: ${formatCountdown(countdown)}"
+    }
+}
+
+private fun formatCountdown(totalSeconds: Int): String {
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return if (minutes > 0) {
+        "${minutes}m ${seconds.toString().padStart(2, '0')}s"
+    } else {
+        "${seconds}s"
+    }
 }
 
 private val TIME_FORMATTER = DateTimeFormatter.ofPattern("MMM d, h:mm a")

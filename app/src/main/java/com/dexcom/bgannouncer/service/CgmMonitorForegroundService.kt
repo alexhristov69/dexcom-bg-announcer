@@ -54,7 +54,9 @@ class CgmMonitorForegroundService : LifecycleService() {
 
     override fun onDestroy() {
         monitorJob?.cancel()
-        settingsRepository.updateRuntimeStatus { copy(serviceRunning = false) }
+        settingsRepository.updateRuntimeStatus {
+            copy(serviceRunning = false, nextPollTime = null, isPolling = false)
+        }
         super.onDestroy()
     }
 
@@ -74,8 +76,14 @@ class CgmMonitorForegroundService : LifecycleService() {
                     settingsRepository.updateRuntimeStatus {
                         copy(lastError = "Dexcom credentials are not configured")
                     }
-                    delay(settings.pollIntervalMinutes * 60_000L)
+                    val delayMs = settings.pollIntervalMinutes * 60_000L
+                    scheduleNextPoll(delayMs)
+                    delay(delayMs)
                     continue
+                }
+
+                settingsRepository.updateRuntimeStatus {
+                    copy(isPolling = true, nextPollTime = System.currentTimeMillis())
                 }
 
                 val pollResult = runCatching {
@@ -86,6 +94,7 @@ class CgmMonitorForegroundService : LifecycleService() {
                     errorBackoffMinutes = 0
                     settingsRepository.updateRuntimeStatus {
                         copy(
+                            isPolling = false,
                             lastPollTime = System.currentTimeMillis(),
                             lastReadingValue = reading.valueMgDl,
                             lastReadingTrend = reading.trend.label,
@@ -96,24 +105,38 @@ class CgmMonitorForegroundService : LifecycleService() {
                     pipeline.processReading(
                         reading = reading,
                         settings = settings,
-                        forceAnnounce = false,
+                        forceAnnounce = true,
                     )
                 }.onFailure { error ->
                     errorBackoffMinutes = min(errorBackoffMinutes + 1, 5)
                     settingsRepository.updateRuntimeStatus {
-                        copy(lastError = error.message ?: "Polling failed")
+                        copy(
+                            isPolling = false,
+                            lastPollTime = System.currentTimeMillis(),
+                            lastError = error.message ?: "Polling failed",
+                        )
                     }
                 }
 
                 val intervalMinutes = settings.pollIntervalMinutes + errorBackoffMinutes
-                delay(intervalMinutes * 60_000L)
+                val delayMs = intervalMinutes * 60_000L
+                scheduleNextPoll(delayMs)
+                delay(delayMs)
             }
+        }
+    }
+
+    private fun scheduleNextPoll(delayMs: Long) {
+        settingsRepository.updateRuntimeStatus {
+            copy(nextPollTime = System.currentTimeMillis() + delayMs)
         }
     }
 
     private fun stopMonitoring() {
         monitorJob?.cancel()
-        settingsRepository.updateRuntimeStatus { copy(serviceRunning = false) }
+        settingsRepository.updateRuntimeStatus {
+            copy(serviceRunning = false, nextPollTime = null, isPolling = false)
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
