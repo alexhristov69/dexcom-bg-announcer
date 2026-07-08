@@ -116,14 +116,20 @@ class CgmMonitorForegroundService : LifecycleService() {
                             lastError = null,
                         )
                     }
-                    pipeline.processReading(
-                        reading = reading,
-                        settings = settings,
-                        forceAnnounce = true,
-                        onStep = { message ->
-                            workflowRepository.updateFromStep(message, WorkflowSource.MONITORING)
-                        },
-                    )
+                    runCatching {
+                        pipeline.processReading(
+                            reading = reading,
+                            settings = settings,
+                            forceAnnounce = true,
+                            onStep = { message ->
+                                workflowRepository.updateFromStep(message, WorkflowSource.MONITORING)
+                            },
+                        )
+                    }.onFailure { error ->
+                        settingsRepository.updateRuntimeStatus {
+                            copy(lastError = error.message ?: "Announcement failed")
+                        }
+                    }
                     updateNotification()
                 }.onFailure { error ->
                     errorBackoffMinutes = min(errorBackoffMinutes + 1, 5)
@@ -139,8 +145,14 @@ class CgmMonitorForegroundService : LifecycleService() {
                             message = "No glucose data available",
                             source = WorkflowSource.MONITORING,
                         )
-                        pipeline.processUnavailableData(settings) { message ->
-                            workflowRepository.updateFromStep(message, WorkflowSource.MONITORING)
+                        runCatching {
+                            pipeline.processUnavailableData(settings) { message ->
+                                workflowRepository.updateFromStep(message, WorkflowSource.MONITORING)
+                            }
+                        }.onFailure { unavailableError ->
+                            settingsRepository.updateRuntimeStatus {
+                                copy(lastError = unavailableError.message ?: "Unavailable announcement failed")
+                            }
                         }
                     } else {
                         settingsRepository.updateRuntimeStatus {

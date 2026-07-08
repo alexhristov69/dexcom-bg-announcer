@@ -6,5 +6,7 @@
     <string name="monitoring_notification_polling">Fetching latest reading…</string>
     <string name="monitoring_notification_updating">Fetching latest reading… (last: %1$s)</string>
     <string name="channel_monitoring">Glucose monitoring</string>
+    <string name="channel_bluetooth_art">Bluetooth cover art</string>
+    <string name="bluetooth_art_notification_text">Updating Bluetooth cover art…</string>
     <string name="media_session_name">Glucose display</string>
 </resources>

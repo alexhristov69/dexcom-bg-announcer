@@ -58,11 +58,13 @@ class GlucoseActionPipeline @Inject constructor(
         if (settings.bluetoothArtEnabled) {
             onStep("Flashing BT art…")
             val art = artGenerator.generate(reading, settings)
-            flashed = bluetoothArtFlashController.flashArt(
-                reading = reading,
-                artBitmap = art.primary,
-                durationSeconds = settings.bluetoothFlashDurationSeconds,
-            )
+            flashed = runCatching {
+                bluetoothArtFlashController.flashArt(
+                    reading = reading,
+                    artBitmap = art.primary,
+                    durationSeconds = settings.bluetoothFlashDurationSeconds,
+                )
+            }.getOrDefault(false)
         }
 
         settingsRepository.updateRuntimeStatus {
@@ -99,10 +101,12 @@ class GlucoseActionPipeline @Inject constructor(
         if (settings.bluetoothArtEnabled) {
             onStep("Flashing BT art…")
             val art = artGenerator.generateUnavailable()
-            flashed = bluetoothArtFlashController.flashUnavailableArt(
-                artBitmap = art.primary,
-                durationSeconds = settings.bluetoothFlashDurationSeconds,
-            )
+            flashed = runCatching {
+                bluetoothArtFlashController.flashUnavailableArt(
+                    artBitmap = art.primary,
+                    durationSeconds = settings.bluetoothFlashDurationSeconds,
+                )
+            }.getOrDefault(false)
         }
 
         settingsRepository.updateRuntimeStatus {

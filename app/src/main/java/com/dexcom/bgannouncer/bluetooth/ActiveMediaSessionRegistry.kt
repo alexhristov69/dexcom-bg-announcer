@@ -36,14 +36,8 @@ class ActiveMediaSessionRegistry @Inject constructor(
     }
 
     fun refresh(service: NotificationListenerService? = listenerService) {
-        val activeService = service ?: return
-        val manager = context.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
-        val component = ComponentName(context, MediaNotificationListener::class.java)
-        val controllers = try {
-            manager.getActiveSessions(component)
-        } catch (_: SecurityException) {
-            emptyList()
-        }
+        if ((service ?: listenerService) == null) return
+        val controllers = getExternalControllers()
 
         val playing = controllers.firstOrNull { controller ->
             controller.playbackState?.state == PlaybackState.STATE_PLAYING
@@ -61,16 +55,34 @@ class ActiveMediaSessionRegistry @Inject constructor(
 
     fun getActiveMediaInfo(): ActiveMediaInfo? = latestInfo
 
+    fun getPlayingController(): MediaController? {
+        return getExternalControllers().firstOrNull { controller ->
+            val state = controller.playbackState?.state
+            state == PlaybackState.STATE_PLAYING || state == PlaybackState.STATE_BUFFERING
+        }
+    }
+
+    fun getControllerForPackage(packageName: String?): MediaController? {
+        if (packageName.isNullOrBlank()) return null
+        return getExternalControllers().firstOrNull { it.packageName == packageName }
+    }
+
     fun getActiveController(): MediaController? {
-        val service = listenerService ?: return null
+        return getExternalControllers().firstOrNull { controller ->
+            controller.playbackState?.state == PlaybackState.STATE_PLAYING
+        } ?: getExternalControllers().firstOrNull()
+    }
+
+    private fun getExternalControllers(): List<MediaController> {
+        if (listenerService == null) return emptyList()
         val manager = context.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
         val component = ComponentName(context, MediaNotificationListener::class.java)
         return try {
-            manager.getActiveSessions(component).firstOrNull { controller ->
-                controller.playbackState?.state == PlaybackState.STATE_PLAYING
-            } ?: manager.getActiveSessions(component).firstOrNull()
+            manager.getActiveSessions(component).filter { controller ->
+                controller.packageName != context.packageName
+            }
         } catch (_: SecurityException) {
-            null
+            emptyList()
         }
     }
 }
