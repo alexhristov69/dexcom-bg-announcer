@@ -3,6 +3,8 @@
     <string name="app_name">Dexcom BG Announcer</string>
     <string name="monitoring_notification_title">Monitoring glucose</string>
     <string name="monitoring_notification_text">Polling Dexcom Share on schedule</string>
+    <string name="monitoring_notification_polling">Fetching latest reading…</string>
+    <string name="monitoring_notification_updating">Fetching latest reading… (last: %1$s)</string>
     <string name="channel_monitoring">Glucose monitoring</string>
     <string name="media_session_name">Glucose display</string>
 </resources>

@@ -13,6 +13,7 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.dexcom.bgannouncer.MainActivity
 import com.dexcom.bgannouncer.R
+import com.dexcom.bgannouncer.data.RuntimeStatus
 import com.dexcom.bgannouncer.data.SettingsRepository
 import com.dexcom.bgannouncer.dexcom.DexcomShareClient
 import com.dexcom.bgannouncer.pipeline.GlucoseActionPipeline
@@ -85,6 +86,7 @@ class CgmMonitorForegroundService : LifecycleService() {
                 settingsRepository.updateRuntimeStatus {
                     copy(isPolling = true, nextPollTime = System.currentTimeMillis())
                 }
+                updateNotification()
 
                 val pollResult = runCatching {
                     dexcomShareClient.fetchLatestReading(credentials).getOrThrow()
@@ -107,6 +109,7 @@ class CgmMonitorForegroundService : LifecycleService() {
                         settings = settings,
                         forceAnnounce = true,
                     )
+                    updateNotification()
                 }.onFailure { error ->
                     errorBackoffMinutes = min(errorBackoffMinutes + 1, 5)
                     settingsRepository.updateRuntimeStatus {
@@ -116,6 +119,7 @@ class CgmMonitorForegroundService : LifecycleService() {
                             lastError = error.message ?: "Polling failed",
                         )
                     }
+                    updateNotification()
                 }
 
                 val intervalMinutes = settings.pollIntervalMinutes + errorBackoffMinutes
@@ -154,16 +158,47 @@ class CgmMonitorForegroundService : LifecycleService() {
             Intent(this, CgmMonitorForegroundService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val status = settingsRepository.getRuntimeStatus()
+        val contentText = formatNotificationText(status)
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.monitoring_notification_title))
-            .setContentText(getString(R.string.monitoring_notification_text))
+            .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(openIntent)
             .addAction(0, "Stop", stopIntent)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .build()
+    }
+
+    private fun formatNotificationText(status: RuntimeStatus): String {
+        val readingText = status.lastReadingValue?.let { value ->
+            buildString {
+                append(value)
+                append(" mg/dL")
+                status.lastReadingTrend?.takeIf { it.isNotBlank() }?.let { trend ->
+                    append(" ")
+                    append(trend)
+                }
+            }
+        }
+
+        return when {
+            status.isPolling && readingText != null ->
+                getString(R.string.monitoring_notification_updating, readingText)
+            status.isPolling ->
+                getString(R.string.monitoring_notification_polling)
+            readingText != null -> readingText
+            status.lastError != null -> status.lastError
+            else -> getString(R.string.monitoring_notification_text)
+        }
+    }
+
+    private fun updateNotification() {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(NOTIFICATION_ID, buildNotification())
     }
 
     private fun createNotificationChannel() {
