@@ -25,6 +25,48 @@ class GlucoseArtGenerator @Inject constructor() {
         return GlucoseArt(primary = primary, thumbnail = thumbnail)
     }
 
+    fun generateUnavailable(): GlucoseArt {
+        val primary = renderUnavailable(PRIMARY_SIZE)
+        val thumbnail = renderUnavailable(THUMBNAIL_SIZE)
+        return GlucoseArt(primary = primary, thumbnail = thumbnail)
+    }
+
+    private fun renderUnavailable(size: Int): Bitmap {
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(Color.parseColor("#455A64"))
+
+        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textAlign = Paint.Align.CENTER
+            textSize = size * 0.16f
+            isFakeBoldText = true
+        }
+        val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(220, 255, 255, 255)
+            textAlign = Paint.Align.CENTER
+            textSize = size * 0.08f
+        }
+
+        canvas.drawText("No data", size / 2f, size * 0.46f, titlePaint)
+        canvas.drawText("Unavailable", size / 2f, size * 0.58f, subtitlePaint)
+
+        val accent = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(180, 255, 255, 255)
+            style = Paint.Style.STROKE
+            strokeWidth = size * 0.015f
+        }
+        val inset = size * 0.06f
+        canvas.drawRoundRect(
+            RectF(inset, inset, size - inset, size - inset),
+            size * 0.08f,
+            size * 0.08f,
+            accent,
+        )
+
+        return bitmap
+    }
+
     private fun render(reading: GlucoseReading, settings: AppSettings, size: Int): Bitmap {
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)

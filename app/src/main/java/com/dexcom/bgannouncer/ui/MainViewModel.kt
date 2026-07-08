@@ -8,10 +8,16 @@ import com.dexcom.bgannouncer.data.AppSettings
 import com.dexcom.bgannouncer.data.ConnectionDiagnostics
 import com.dexcom.bgannouncer.data.ConnectionDiagnosticsRepository
 import com.dexcom.bgannouncer.data.DexcomCredentials
+import com.dexcom.bgannouncer.data.MonitorWorkflowRepository
 import com.dexcom.bgannouncer.data.RuntimeStatus
 import com.dexcom.bgannouncer.data.SettingsRepository
+import com.dexcom.bgannouncer.data.WorkflowPhase
+import com.dexcom.bgannouncer.data.WorkflowSource
+import com.dexcom.bgannouncer.data.WorkflowState
+import com.dexcom.bgannouncer.data.toGlucoseReading
 import com.dexcom.bgannouncer.dexcom.DexcomRegion
 import com.dexcom.bgannouncer.dexcom.DexcomShareClient
+import com.dexcom.bgannouncer.pipeline.GlucoseActionPipeline
 import com.dexcom.bgannouncer.service.CgmMonitorForegroundService
 import com.dexcom.bgannouncer.test.AdHocTestStep
 import com.dexcom.bgannouncer.test.GlucoseTestRunner
@@ -56,12 +62,16 @@ data class MainUiState(
     val adHocCooldownSeconds: Int = 0,
     val connectionDiagnostics: ConnectionDiagnostics = ConnectionDiagnosticsRepository.emptySnapshot(),
     val lastBluetoothArtFlash: LastBluetoothArtFlash? = null,
+    val workflowState: WorkflowState = WorkflowState(),
 ) {
     val isConfigured: Boolean = username.isNotBlank() && password.isNotBlank()
     val adHocTestRunning: Boolean = adHocTestStep == AdHocTestStep.FETCHING ||
         adHocTestStep == AdHocTestStep.ANNOUNCING ||
         adHocTestStep == AdHocTestStep.FLASHING_BT
     val canRunAdHocTest: Boolean = isConfigured && !adHocTestRunning && adHocCooldownSeconds == 0 && !isBusy
+    val canTestBroadcast: Boolean =
+        (lastReadingValue != null || DexcomShareClient.isNoReadingsMessage(lastError)) &&
+            !adHocTestRunning && !isBusy && !workflowState.isTestBroadcastActive
 }
 
 @HiltViewModel
@@ -70,7 +80,9 @@ class MainViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val dexcomShareClient: DexcomShareClient,
     private val glucoseTestRunner: GlucoseTestRunner,
+    private val pipeline: GlucoseActionPipeline,
     private val lastBluetoothArtStore: LastBluetoothArtStore,
+    private val workflowRepository: MonitorWorkflowRepository,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -99,6 +111,11 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             lastBluetoothArtStore.lastFlash.collect { flash ->
                 _uiState.update { it.copy(lastBluetoothArtFlash = flash) }
+            }
+        }
+        viewModelScope.launch {
+            workflowRepository.state.collect { workflow ->
+                _uiState.update { it.copy(workflowState = workflow) }
             }
         }
     }
@@ -162,6 +179,76 @@ class MainViewModel @Inject constructor(
                 )
             }
             glucoseTestRunner.resetIdle()
+        }
+    }
+
+    fun runTestBroadcast() {
+        viewModelScope.launch {
+            saveSettings()
+            _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
+            val settings = settingsRepository.getSettings()
+            val status = settingsRepository.getRuntimeStatus()
+            workflowRepository.setActive(
+                phase = WorkflowPhase.ANNOUNCING,
+                message = "Starting test broadcast",
+                source = WorkflowSource.TEST_BROADCAST,
+            )
+
+            val summary = when {
+                status.lastReadingValue != null -> {
+                    val reading = status.toGlucoseReading()
+                        ?: run {
+                            workflowRepository.completeTestBroadcast("No last reading to broadcast")
+                            _uiState.update {
+                                it.copy(isBusy = false, errorMessage = "No last reading to broadcast")
+                            }
+                            return@launch
+                        }
+                    val result = pipeline.processReading(
+                        reading = reading,
+                        settings = settings,
+                        forceAnnounce = true,
+                        onStep = { message ->
+                            workflowRepository.updateFromStep(message, WorkflowSource.TEST_BROADCAST)
+                        },
+                    )
+                    buildBroadcastSummary(
+                        headline = "${reading.displayValue()} mg/dL ${reading.trend.label}",
+                        announced = result.announced,
+                        flashedBluetooth = result.flashedBluetooth,
+                        settings = settings,
+                    )
+                }
+                DexcomShareClient.isNoReadingsMessage(status.lastError) -> {
+                    workflowRepository.setActive(
+                        phase = WorkflowPhase.HANDLING_UNAVAILABLE,
+                        message = "Broadcasting unavailable data",
+                        source = WorkflowSource.TEST_BROADCAST,
+                    )
+                    val result = pipeline.processUnavailableData(settings) { message ->
+                        workflowRepository.updateFromStep(message, WorkflowSource.TEST_BROADCAST)
+                    }
+                    buildBroadcastSummary(
+                        headline = "Blood glucose data unavailable",
+                        announced = result.announced,
+                        flashedBluetooth = result.flashedBluetooth,
+                        settings = settings,
+                    )
+                }
+                else -> {
+                    workflowRepository.completeTestBroadcast("No last reading to broadcast")
+                    _uiState.update {
+                        it.copy(isBusy = false, errorMessage = "No last reading to broadcast")
+                    }
+                    return@launch
+                }
+            }
+
+            workflowRepository.completeTestBroadcast(summary)
+            refreshFromRepository()
+            _uiState.update {
+                it.copy(isBusy = false, statusMessage = "Test broadcast: $summary")
+            }
         }
     }
 
@@ -261,6 +348,21 @@ class MainViewModel @Inject constructor(
         val nextPollTime = status.nextPollTime ?: return null
         val remainingMs = nextPollTime - System.currentTimeMillis()
         return (remainingMs / 1_000L).toInt().coerceAtLeast(0)
+    }
+
+    private fun buildBroadcastSummary(
+        headline: String,
+        announced: Boolean,
+        flashedBluetooth: Boolean,
+        settings: AppSettings,
+    ): String {
+        return buildString {
+            append(headline)
+            if (announced) append(" · announced")
+            if (flashedBluetooth) append(" · BT flash")
+            if (!announced && !settings.ttsEnabled) append(" · TTS skipped")
+            if (!flashedBluetooth && settings.bluetoothArtEnabled) append(" · BT unavailable")
+        }
     }
 
     private fun MainUiState.toAppSettings(monitoringEnabled: Boolean): AppSettings {

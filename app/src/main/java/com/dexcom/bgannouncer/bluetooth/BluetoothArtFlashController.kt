@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
+import com.dexcom.bgannouncer.announce.GlucoseSpeechFormatter
 import com.dexcom.bgannouncer.dexcom.GlucoseReading
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
@@ -25,14 +26,42 @@ class BluetoothArtFlashController @Inject constructor(
         artBitmap: Bitmap,
         durationSeconds: Int,
     ): Boolean {
+        val activeMedia = activeMediaSessionRegistry.getActiveMediaInfo()
+        return flash(
+            artBitmap = artBitmap,
+            title = "${reading.displayValue()} mg/dL",
+            artist = reading.trend.label,
+            album = activeMedia?.title ?: "Glucose reading",
+            durationSeconds = durationSeconds,
+            onRecorded = { lastBluetoothArtStore.recordFlash(reading, artBitmap) },
+        )
+    }
+
+    suspend fun flashUnavailableArt(
+        artBitmap: Bitmap,
+        durationSeconds: Int,
+    ): Boolean {
+        return flash(
+            artBitmap = artBitmap,
+            title = GlucoseSpeechFormatter.UNAVAILABLE_ART_TITLE,
+            artist = GlucoseSpeechFormatter.UNAVAILABLE_ART_SUBTITLE,
+            album = GlucoseSpeechFormatter.unavailableDisplayText(),
+            durationSeconds = durationSeconds,
+            onRecorded = { lastBluetoothArtStore.recordUnavailableFlash(artBitmap) },
+        )
+    }
+
+    private suspend fun flash(
+        artBitmap: Bitmap,
+        title: String,
+        artist: String,
+        album: String,
+        durationSeconds: Int,
+        onRecorded: () -> Unit,
+    ): Boolean {
         if (!isBluetoothAudioConnected()) return false
 
         val session = sessionHolder.ensureSession()
-        val activeMedia = activeMediaSessionRegistry.getActiveMediaInfo()
-
-        val title = "${reading.displayValue()} mg/dL"
-        val artist = reading.trend.label
-        val album = activeMedia?.title ?: "Glucose reading"
 
         val metadata = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
@@ -57,7 +86,7 @@ class BluetoothArtFlashController @Inject constructor(
         session.isActive = true
         session.setMetadata(metadata)
         session.setPlaybackState(playbackState)
-        lastBluetoothArtStore.recordFlash(reading, artBitmap)
+        onRecorded()
 
         delay(durationSeconds * 1000L)
 

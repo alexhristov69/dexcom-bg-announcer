@@ -36,8 +36,23 @@ class GlucoseAnnouncer @Inject constructor(
 
     suspend fun announce(reading: GlucoseReading, settings: AppSettings) {
         if (!settings.ttsEnabled) return
+        speak(
+            utterance = GlucoseSpeechFormatter.buildUtterance(reading, settings),
+            settings = settings,
+            utteranceId = "bg_${reading.dedupKey}",
+        )
+    }
 
-        val utterance = GlucoseSpeechFormatter.buildUtterance(reading, settings)
+    suspend fun announceUnavailable(settings: AppSettings) {
+        if (!settings.ttsEnabled) return
+        speak(
+            utterance = GlucoseSpeechFormatter.unavailableUtterance(),
+            settings = settings,
+            utteranceId = "bg_unavailable_${System.currentTimeMillis()}",
+        )
+    }
+
+    private suspend fun speak(utterance: String, settings: AppSettings, utteranceId: String) {
         val tts = awaitTts()
 
         val focusRequest = buildAudioFocusRequest()
@@ -55,7 +70,6 @@ class GlucoseAnnouncer @Inject constructor(
         tts.setSpeechRate(settings.ttsSpeechRate)
 
         suspendCancellableCoroutine { continuation ->
-            val utteranceId = "bg_${reading.dedupKey}"
             tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) = Unit
 

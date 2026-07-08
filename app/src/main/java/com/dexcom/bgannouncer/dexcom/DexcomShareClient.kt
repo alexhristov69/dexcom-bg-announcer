@@ -47,7 +47,7 @@ class DexcomShareClient @Inject constructor(
                 val sessionId = authenticate(credentials, forceRefresh = false)
                 val records = readLatestGlucose(credentials.region, sessionId)
                 val record = records.firstOrNull()
-                    ?: throw DexcomShareException("No glucose readings returned from Dexcom Share")
+                    ?: throw DexcomShareException(NO_READINGS_MESSAGE)
                 parseRecord(record)
             }
         }.onSuccess { reading ->
@@ -341,6 +341,15 @@ class DexcomShareClient @Inject constructor(
         private const val DEFAULT_UUID = "00000000-0000-0000-0000-000000000000"
         private const val APPLICATION_ID_US = "d89443d2-327c-4a6f-89e5-496bbb0317db"
         private const val APPLICATION_ID_JP = "d8665ade-9673-4e27-9ff6-92db4ce13d13"
+        const val NO_READINGS_MESSAGE = "No glucose readings returned from Dexcom Share"
+
+        fun isNoReadingsError(error: Throwable): Boolean {
+            return error.message == NO_READINGS_MESSAGE
+        }
+
+        fun isNoReadingsMessage(message: String?): Boolean {
+            return message == NO_READINGS_MESSAGE
+        }
     }
 }
 

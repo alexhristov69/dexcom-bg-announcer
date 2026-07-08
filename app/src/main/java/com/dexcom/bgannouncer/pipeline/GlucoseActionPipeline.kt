@@ -5,6 +5,7 @@ import com.dexcom.bgannouncer.art.GlucoseArtGenerator
 import com.dexcom.bgannouncer.bluetooth.BluetoothArtFlashController
 import com.dexcom.bgannouncer.data.AppSettings
 import com.dexcom.bgannouncer.data.SettingsRepository
+import com.dexcom.bgannouncer.dexcom.DexcomShareClient
 import com.dexcom.bgannouncer.dexcom.GlucoseReading
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -14,6 +15,11 @@ data class PipelineResult(
     val announced: Boolean,
     val flashedBluetooth: Boolean,
     val skippedAsDuplicate: Boolean,
+)
+
+data class UnavailableDataResult(
+    val announced: Boolean,
+    val flashedBluetooth: Boolean,
 )
 
 @Singleton
@@ -74,6 +80,43 @@ class GlucoseActionPipeline @Inject constructor(
             announced = announced,
             flashedBluetooth = flashed,
             skippedAsDuplicate = false,
+        )
+    }
+
+    suspend fun processUnavailableData(
+        settings: AppSettings,
+        onStep: (String) -> Unit = {},
+    ): UnavailableDataResult {
+        var announced = false
+        var flashed = false
+
+        if (settings.ttsEnabled) {
+            onStep("Announcing…")
+            announcer.announceUnavailable(settings)
+            announced = true
+        }
+
+        if (settings.bluetoothArtEnabled) {
+            onStep("Flashing BT art…")
+            val art = artGenerator.generateUnavailable()
+            flashed = bluetoothArtFlashController.flashUnavailableArt(
+                artBitmap = art.primary,
+                durationSeconds = settings.bluetoothFlashDurationSeconds,
+            )
+        }
+
+        settingsRepository.updateRuntimeStatus {
+            copy(
+                lastReadingValue = null,
+                lastReadingTrend = null,
+                lastReadingTime = null,
+                lastError = DexcomShareClient.NO_READINGS_MESSAGE,
+            )
+        }
+
+        return UnavailableDataResult(
+            announced = announced,
+            flashedBluetooth = flashed,
         )
     }
 }

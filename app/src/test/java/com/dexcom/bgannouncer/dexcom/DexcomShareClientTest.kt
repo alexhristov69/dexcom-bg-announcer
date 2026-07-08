@@ -8,6 +8,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -118,5 +119,12 @@ class DexcomShareClientTest {
         assertEquals(GlucoseTrend.FLAT, GlucoseTrend.fromName("Flat"))
         assertEquals(GlucoseTrend.DOUBLE_UP, GlucoseTrend.fromName("DoubleUp"))
         assertEquals(GlucoseTrend.SINGLE_DOWN, GlucoseTrend.fromName("SingleDown"))
+    }
+
+    @Test
+    fun isNoReadingsError_matchesEmptyDexcomResponse() {
+        val error = DexcomShareException(DexcomShareClient.NO_READINGS_MESSAGE)
+        assertTrue(DexcomShareClient.isNoReadingsError(error))
+        assertFalse(DexcomShareClient.isNoReadingsError(Exception("Polling failed")))
     }
 }

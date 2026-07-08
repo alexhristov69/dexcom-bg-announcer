@@ -12,4 +12,12 @@ object GlucoseSpeechFormatter {
             valuePart
         }
     }
+
+    fun unavailableUtterance(): String = UNAVAILABLE_DISPLAY_TEXT
+
+    fun unavailableDisplayText(): String = UNAVAILABLE_DISPLAY_TEXT
+
+    const val UNAVAILABLE_DISPLAY_TEXT = "Blood glucose data is unavailable"
+    const val UNAVAILABLE_ART_TITLE = "No data"
+    const val UNAVAILABLE_ART_SUBTITLE = "Unavailable"
 }

@@ -28,4 +28,9 @@ class GlucoseSpeechFormatterTest {
         assertTrue(text.contains("112"))
         assertFalse(text.contains("steady"))
     }
+
+    @Test
+    fun unavailableUtterance_describesMissingData() {
+        assertTrue(GlucoseSpeechFormatter.unavailableUtterance().contains("unavailable"))
+    }
 }

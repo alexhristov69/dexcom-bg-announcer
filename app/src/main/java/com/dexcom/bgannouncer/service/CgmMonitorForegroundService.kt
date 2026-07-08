@@ -11,10 +11,15 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import com.dexcom.bgannouncer.announce.GlucoseSpeechFormatter
 import com.dexcom.bgannouncer.MainActivity
 import com.dexcom.bgannouncer.R
+import com.dexcom.bgannouncer.data.MonitorWorkflowRepository
 import com.dexcom.bgannouncer.data.RuntimeStatus
 import com.dexcom.bgannouncer.data.SettingsRepository
+import com.dexcom.bgannouncer.data.WorkflowPhase
+import com.dexcom.bgannouncer.data.WorkflowSource
+import com.dexcom.bgannouncer.data.WorkflowState
 import com.dexcom.bgannouncer.dexcom.DexcomShareClient
 import com.dexcom.bgannouncer.pipeline.GlucoseActionPipeline
 import dagger.hilt.android.AndroidEntryPoint
@@ -30,6 +35,7 @@ class CgmMonitorForegroundService : LifecycleService() {
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var dexcomShareClient: DexcomShareClient
     @Inject lateinit var pipeline: GlucoseActionPipeline
+    @Inject lateinit var workflowRepository: MonitorWorkflowRepository
 
     private var monitorJob: Job? = null
 
@@ -55,6 +61,7 @@ class CgmMonitorForegroundService : LifecycleService() {
 
     override fun onDestroy() {
         monitorJob?.cancel()
+        workflowRepository.clearMonitoringWorkflow()
         settingsRepository.updateRuntimeStatus {
             copy(serviceRunning = false, nextPollTime = null, isPolling = false)
         }
@@ -86,6 +93,11 @@ class CgmMonitorForegroundService : LifecycleService() {
                 settingsRepository.updateRuntimeStatus {
                     copy(isPolling = true, nextPollTime = System.currentTimeMillis())
                 }
+                workflowRepository.setActive(
+                    phase = WorkflowPhase.FETCHING_READING,
+                    message = "Polling Dexcom Share",
+                    source = WorkflowSource.MONITORING,
+                )
                 updateNotification()
 
                 val pollResult = runCatching {
@@ -108,6 +120,9 @@ class CgmMonitorForegroundService : LifecycleService() {
                         reading = reading,
                         settings = settings,
                         forceAnnounce = true,
+                        onStep = { message ->
+                            workflowRepository.updateFromStep(message, WorkflowSource.MONITORING)
+                        },
                     )
                     updateNotification()
                 }.onFailure { error ->
@@ -116,8 +131,21 @@ class CgmMonitorForegroundService : LifecycleService() {
                         copy(
                             isPolling = false,
                             lastPollTime = System.currentTimeMillis(),
-                            lastError = error.message ?: "Polling failed",
                         )
+                    }
+                    if (DexcomShareClient.isNoReadingsError(error)) {
+                        workflowRepository.setActive(
+                            phase = WorkflowPhase.HANDLING_UNAVAILABLE,
+                            message = "No glucose data available",
+                            source = WorkflowSource.MONITORING,
+                        )
+                        pipeline.processUnavailableData(settings) { message ->
+                            workflowRepository.updateFromStep(message, WorkflowSource.MONITORING)
+                        }
+                    } else {
+                        settingsRepository.updateRuntimeStatus {
+                            copy(lastError = error.message ?: "Polling failed")
+                        }
                     }
                     updateNotification()
                 }
@@ -125,6 +153,7 @@ class CgmMonitorForegroundService : LifecycleService() {
                 val intervalMinutes = settings.pollIntervalMinutes + errorBackoffMinutes
                 val delayMs = intervalMinutes * 60_000L
                 scheduleNextPoll(delayMs)
+                workflowRepository.setWaitingForNextPoll()
                 delay(delayMs)
             }
         }
@@ -138,6 +167,7 @@ class CgmMonitorForegroundService : LifecycleService() {
 
     private fun stopMonitoring() {
         monitorJob?.cancel()
+        workflowRepository.clearMonitoringWorkflow()
         settingsRepository.updateRuntimeStatus {
             copy(serviceRunning = false, nextPollTime = null, isPolling = false)
         }
@@ -174,6 +204,10 @@ class CgmMonitorForegroundService : LifecycleService() {
     }
 
     private fun formatNotificationText(status: RuntimeStatus): String {
+        if (DexcomShareClient.isNoReadingsMessage(status.lastError)) {
+            return GlucoseSpeechFormatter.unavailableDisplayText()
+        }
+
         val readingText = status.lastReadingValue?.let { value ->
             buildString {
                 append(value)

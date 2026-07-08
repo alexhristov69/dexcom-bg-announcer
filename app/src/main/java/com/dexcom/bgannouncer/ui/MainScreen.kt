@@ -52,8 +52,12 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.dexcom.bgannouncer.announce.GlucoseSpeechFormatter
 import com.dexcom.bgannouncer.bluetooth.BluetoothPermissionHelper
 import com.dexcom.bgannouncer.dexcom.DexcomRegion
+import com.dexcom.bgannouncer.dexcom.DexcomShareClient
+import com.dexcom.bgannouncer.data.WorkflowPhase
+import com.dexcom.bgannouncer.data.WorkflowSource
 import com.dexcom.bgannouncer.test.AdHocTestStep
 import java.time.Instant
 import java.time.ZoneId
@@ -134,6 +138,14 @@ fun MainScreen(viewModel: MainViewModel = hiltViewModel()) {
                     else -> "Run Ad-Hoc Test"
                 },
             )
+        }
+
+        OutlinedButton(
+            onClick = { viewModel.runTestBroadcast() },
+            enabled = uiState.canTestBroadcast,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Test Broadcast")
         }
 
         HorizontalDivider()
@@ -313,6 +325,8 @@ private fun StatusCard(uiState: MainUiState) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Status", style = MaterialTheme.typography.titleMedium)
                 Text("Service: ${if (uiState.serviceRunning) "running" else "stopped"}")
+                Text("Monitor workflow: ${formatMonitorWorkflow(uiState)}")
+                Text("Test broadcast: ${formatTestBroadcastState(uiState)}")
                 Text(
                     "Last reading: ${
                         uiState.lastReadingValue?.let { "$it mg/dL ${uiState.lastReadingTrend.orEmpty()}" } ?: "—"
@@ -322,7 +336,12 @@ private fun StatusCard(uiState: MainUiState) {
                 Text(formatNextPollCountdown(uiState))
                 Text("Last ad-hoc test: ${formatTime(uiState.lastAdHocTestTime)}")
                 uiState.lastAdHocTestResult?.let { Text("Ad-hoc result: $it") }
-                uiState.lastError?.let { Text("Last error: $it", color = MaterialTheme.colorScheme.error) }
+                uiState.lastError?.let { error ->
+                    Text(
+                        formatLastError(error),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 if (uiState.adHocTestStep != AdHocTestStep.IDLE && uiState.adHocTestStep != AdHocTestStep.DONE) {
                     Text("Test step: ${uiState.adHocTestMessage ?: uiState.adHocTestStep.name}")
                 }
@@ -359,12 +378,12 @@ private fun LastBluetoothArtCard(uiState: MainUiState) {
                         )
                     } else {
                         Text(
-                            "${lastFlash.valueMgDl} mg/dL ${lastFlash.trendLabel} · ${formatTime(lastFlash.flashedAtEpochMs)}",
+                            "${lastFlash.caption} · ${formatTime(lastFlash.flashedAtEpochMs)}",
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Image(
                             bitmap = lastFlash.bitmap.asImageBitmap(),
-                            contentDescription = "Last Bluetooth cover art: ${lastFlash.valueMgDl} mg/dL",
+                            contentDescription = "Last Bluetooth cover art: ${lastFlash.caption}",
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(240.dp),
@@ -451,6 +470,69 @@ private fun ToggleRow(label: String, checked: Boolean, onCheckedChange: (Boolean
         Text(label)
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
+}
+
+private fun formatMonitorWorkflow(uiState: MainUiState): String {
+    if (!uiState.serviceRunning) {
+        return "Idle (monitoring stopped)"
+    }
+
+    val workflow = uiState.workflowState
+    if (workflow.source == WorkflowSource.MONITORING && workflow.phase != WorkflowPhase.IDLE) {
+        return formatWorkflowDetail(workflow.phase, workflow.message, uiState.nextPollCountdownSeconds)
+    }
+    if (uiState.isPolling) {
+        return "Polling Dexcom Share"
+    }
+    if (workflow.phase == WorkflowPhase.WAITING_FOR_NEXT_POLL) {
+        return formatWorkflowDetail(
+            phase = workflow.phase,
+            message = workflow.message,
+            countdownSeconds = uiState.nextPollCountdownSeconds,
+        )
+    }
+    return "Idle"
+}
+
+private fun formatTestBroadcastState(uiState: MainUiState): String {
+    val workflow = uiState.workflowState
+    if (workflow.isTestBroadcastActive) {
+        return formatWorkflowDetail(workflow.phase, workflow.message, null)
+    }
+    val summary = workflow.lastTestBroadcastSummary
+    if (summary != null) {
+        return "Last: $summary (${formatTime(workflow.lastTestBroadcastTime)})"
+    }
+    return "—"
+}
+
+private fun formatWorkflowDetail(
+    phase: WorkflowPhase,
+    message: String?,
+    countdownSeconds: Int?,
+): String {
+    val base = message ?: when (phase) {
+        WorkflowPhase.FETCHING_READING -> "Polling Dexcom Share"
+        WorkflowPhase.ANNOUNCING -> "Announcing glucose reading"
+        WorkflowPhase.FLASHING_BT -> "Flashing Bluetooth cover art"
+        WorkflowPhase.HANDLING_UNAVAILABLE -> "Broadcasting unavailable data"
+        WorkflowPhase.WAITING_FOR_NEXT_POLL -> "Waiting for next scheduled poll"
+        WorkflowPhase.IDLE -> "Idle"
+    }
+    return if (phase == WorkflowPhase.WAITING_FOR_NEXT_POLL && countdownSeconds != null && countdownSeconds > 0) {
+        "$base · ${formatCountdown(countdownSeconds)} remaining"
+    } else {
+        base
+    }
+}
+
+private fun formatLastError(error: String): String {
+    val message = if (DexcomShareClient.isNoReadingsMessage(error)) {
+        GlucoseSpeechFormatter.unavailableDisplayText()
+    } else {
+        error
+    }
+    return "Last error: $message"
 }
 
 private fun formatTime(epochMs: Long?): String {

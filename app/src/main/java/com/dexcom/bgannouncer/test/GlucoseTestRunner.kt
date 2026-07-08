@@ -103,6 +103,37 @@ class GlucoseTestRunner @Inject constructor(
             )
             Result.success(summary)
         } catch (error: Exception) {
+            if (DexcomShareClient.isNoReadingsError(error)) {
+                val result = pipeline.processUnavailableData(settings) { stepMessage ->
+                    _state.value = when {
+                        stepMessage.contains("BT", ignoreCase = true) ->
+                            AdHocTestState(step = AdHocTestStep.FLASHING_BT, message = stepMessage)
+                        else ->
+                            AdHocTestState(step = AdHocTestStep.ANNOUNCING, message = stepMessage)
+                    }
+                }
+                val summary = buildString {
+                    append("Blood glucose data unavailable")
+                    if (result.announced) append(" · announced")
+                    if (result.flashedBluetooth) append(" · BT flash")
+                    if (!result.announced && !settings.ttsEnabled) append(" · TTS skipped")
+                    if (!result.flashedBluetooth && settings.bluetoothArtEnabled) append(" · BT unavailable")
+                }
+                val completedAt = System.currentTimeMillis()
+                settingsRepository.updateRuntimeStatus {
+                    copy(
+                        lastAdHocTestTime = completedAt,
+                        lastAdHocTestResult = summary,
+                    )
+                }
+                _state.value = AdHocTestState(
+                    step = AdHocTestStep.DONE,
+                    message = summary,
+                    lastCompletedAt = completedAt,
+                )
+                return Result.success(summary)
+            }
+
             val message = error.message ?: "Ad-hoc test failed"
             settingsRepository.updateRuntimeStatus {
                 copy(lastError = message)
