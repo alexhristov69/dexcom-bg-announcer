@@ -24,6 +24,7 @@ class BluetoothArtFlashController @Inject constructor(
         reading: GlucoseReading,
         artBitmap: Bitmap,
         durationSeconds: Int,
+        skipPlaybackGuard: Boolean = false,
     ): Boolean {
         val activeMedia = activeMediaSessionRegistry.getActiveMediaInfo()
         return flash(
@@ -33,12 +34,14 @@ class BluetoothArtFlashController @Inject constructor(
             album = activeMedia?.title ?: "Glucose reading",
             durationSeconds = durationSeconds,
             onRecorded = { lastBluetoothArtStore.recordFlash(reading, artBitmap) },
+            skipPlaybackGuard = skipPlaybackGuard,
         )
     }
 
     suspend fun flashUnavailableArt(
         artBitmap: Bitmap,
         durationSeconds: Int,
+        skipPlaybackGuard: Boolean = false,
     ): Boolean {
         return flash(
             artBitmap = artBitmap,
@@ -47,6 +50,7 @@ class BluetoothArtFlashController @Inject constructor(
             album = GlucoseSpeechFormatter.unavailableDisplayText(),
             durationSeconds = durationSeconds,
             onRecorded = { lastBluetoothArtStore.recordUnavailableFlash(artBitmap) },
+            skipPlaybackGuard = skipPlaybackGuard,
         )
     }
 
@@ -57,6 +61,7 @@ class BluetoothArtFlashController @Inject constructor(
         album: String,
         durationSeconds: Int,
         onRecorded: () -> Unit,
+        skipPlaybackGuard: Boolean,
     ): Boolean {
         onRecorded()
 
@@ -76,7 +81,9 @@ class BluetoothArtFlashController @Inject constructor(
         )
         val result = sessionHolder.prepareFlash(request)
 
-        activeMediaPlaybackGuard.suppressActivePlayback()
+        if (!skipPlaybackGuard) {
+            activeMediaPlaybackGuard.suppressActivePlayback()
+        }
         return try {
             withContext(Dispatchers.Main) {
                 context.startForegroundService(
@@ -89,7 +96,9 @@ class BluetoothArtFlashController @Inject constructor(
         } catch (_: Exception) {
             false
         } finally {
-            activeMediaPlaybackGuard.restoreActivePlayback()
+            if (!skipPlaybackGuard) {
+                activeMediaPlaybackGuard.restoreActivePlayback()
+            }
         }
     }
 

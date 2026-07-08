@@ -2,11 +2,14 @@ package com.dexcom.bgannouncer.pipeline
 
 import com.dexcom.bgannouncer.announce.GlucoseAnnouncer
 import com.dexcom.bgannouncer.art.GlucoseArtGenerator
+import com.dexcom.bgannouncer.bluetooth.ActiveMediaPlaybackGuard
 import com.dexcom.bgannouncer.bluetooth.BluetoothArtFlashController
 import com.dexcom.bgannouncer.data.AppSettings
 import com.dexcom.bgannouncer.data.SettingsRepository
 import com.dexcom.bgannouncer.dexcom.DexcomShareClient
 import com.dexcom.bgannouncer.dexcom.GlucoseReading
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -27,6 +30,7 @@ class GlucoseActionPipeline @Inject constructor(
     private val announcer: GlucoseAnnouncer,
     private val artGenerator: GlucoseArtGenerator,
     private val bluetoothArtFlashController: BluetoothArtFlashController,
+    private val activeMediaPlaybackGuard: ActiveMediaPlaybackGuard,
     private val settingsRepository: SettingsRepository,
 ) {
     suspend fun processReading(
@@ -49,23 +53,33 @@ class GlucoseActionPipeline @Inject constructor(
         var announced = false
         var flashed = false
 
-        if (settings.ttsEnabled) {
-            onStep("Announcing…")
-            announcer.announce(reading, settings)
-            announced = true
+        val art = if (settings.bluetoothArtEnabled) {
+            artGenerator.generate(reading, settings)
+        } else {
+            null
         }
 
-        if (settings.bluetoothArtEnabled) {
-            onStep("Flashing BT art…")
-            val art = artGenerator.generate(reading, settings)
-            flashed = runCatching {
-                bluetoothArtFlashController.flashArt(
-                    reading = reading,
-                    artBitmap = art.primary,
-                    durationSeconds = settings.bluetoothFlashDurationSeconds,
-                )
-            }.getOrDefault(false)
-        }
+        runAnnounceAndFlash(
+            settings = settings,
+            onStep = onStep,
+            announce = {
+                announcer.announce(reading, settings)
+                announced = true
+            },
+            flash = { skipPlaybackGuard ->
+                val bitmap = art?.primary ?: return@runAnnounceAndFlash false
+                val result = runCatching {
+                    bluetoothArtFlashController.flashArt(
+                        reading = reading,
+                        artBitmap = bitmap,
+                        durationSeconds = settings.bluetoothFlashDurationSeconds,
+                        skipPlaybackGuard = skipPlaybackGuard,
+                    )
+                }.getOrDefault(false)
+                flashed = result
+                result
+            },
+        )
 
         settingsRepository.updateRuntimeStatus {
             copy(
@@ -92,22 +106,32 @@ class GlucoseActionPipeline @Inject constructor(
         var announced = false
         var flashed = false
 
-        if (settings.ttsEnabled) {
-            onStep("Announcing…")
-            announcer.announceUnavailable(settings)
-            announced = true
+        val art = if (settings.bluetoothArtEnabled) {
+            artGenerator.generateUnavailable()
+        } else {
+            null
         }
 
-        if (settings.bluetoothArtEnabled) {
-            onStep("Flashing BT art…")
-            val art = artGenerator.generateUnavailable()
-            flashed = runCatching {
-                bluetoothArtFlashController.flashUnavailableArt(
-                    artBitmap = art.primary,
-                    durationSeconds = settings.bluetoothFlashDurationSeconds,
-                )
-            }.getOrDefault(false)
-        }
+        runAnnounceAndFlash(
+            settings = settings,
+            onStep = onStep,
+            announce = {
+                announcer.announceUnavailable(settings)
+                announced = true
+            },
+            flash = { skipPlaybackGuard ->
+                val bitmap = art?.primary ?: return@runAnnounceAndFlash false
+                val result = runCatching {
+                    bluetoothArtFlashController.flashUnavailableArt(
+                        artBitmap = bitmap,
+                        durationSeconds = settings.bluetoothFlashDurationSeconds,
+                        skipPlaybackGuard = skipPlaybackGuard,
+                    )
+                }.getOrDefault(false)
+                flashed = result
+                result
+            },
+        )
 
         settingsRepository.updateRuntimeStatus {
             copy(
@@ -122,5 +146,52 @@ class GlucoseActionPipeline @Inject constructor(
             announced = announced,
             flashedBluetooth = flashed,
         )
+    }
+
+    private suspend fun runAnnounceAndFlash(
+        settings: AppSettings,
+        onStep: (String) -> Unit,
+        announce: suspend () -> Unit,
+        flash: suspend (skipPlaybackGuard: Boolean) -> Boolean,
+    ) {
+        val ttsEnabled = settings.ttsEnabled
+        val btEnabled = settings.bluetoothArtEnabled
+        if (!ttsEnabled && !btEnabled) return
+
+        val runConcurrently = ttsEnabled && btEnabled
+        val managePlaybackExternally = runConcurrently && btEnabled
+
+        if (managePlaybackExternally) {
+            activeMediaPlaybackGuard.suppressActivePlayback()
+        }
+
+        try {
+            if (runConcurrently) {
+                onStep("Announcing and flashing BT art…")
+                coroutineScope {
+                    val announceJob = async {
+                        runCatching { announce() }
+                    }
+                    val flashJob = async {
+                        runCatching { flash(true) }
+                    }
+                    announceJob.await()
+                    flashJob.await()
+                }
+            } else {
+                if (ttsEnabled) {
+                    onStep("Announcing…")
+                    runCatching { announce() }
+                }
+                if (btEnabled) {
+                    onStep("Flashing BT art…")
+                    runCatching { flash(false) }
+                }
+            }
+        } finally {
+            if (managePlaybackExternally) {
+                activeMediaPlaybackGuard.restoreActivePlayback()
+            }
+        }
     }
 }

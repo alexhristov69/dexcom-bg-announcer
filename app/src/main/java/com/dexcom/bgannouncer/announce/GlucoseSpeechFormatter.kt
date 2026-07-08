@@ -14,7 +14,7 @@ object GlucoseSpeechFormatter {
         val valuePart = "Blood glucose ${reading.valueMgDl} milligrams per deciliter"
         val agePart = formatReadingAge(reading.timestamp, now)
         return if (settings.ttsIncludeTrend) {
-            "$valuePart, taken $agePart, ${reading.trend.spokenPhrase}"
+            "$valuePart, ${reading.trend.spokenPhrase}, taken $agePart"
         } else {
             "$valuePart, taken $agePart"
         }

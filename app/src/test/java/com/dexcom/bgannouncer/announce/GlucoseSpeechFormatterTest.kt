@@ -22,6 +22,7 @@ class GlucoseSpeechFormatterTest {
         assertTrue(text.contains("112"))
         assertTrue(text.contains("steady"))
         assertTrue(text.contains("5 minutes ago"))
+        assertTrue(text.indexOf("steady") < text.indexOf("5 minutes ago"))
     }
 
     @Test
